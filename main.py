@@ -42,6 +42,7 @@ db_data = {
     "ban_group_id": None,  # ID группы, где был бан
     "fk_active": False,  # Флаг активной игры ФК
     "fk_target": None,  # ID цели для ФК
+    "fk_target_message_id": None,  # ID сообщения победителя
     "fk_message_id": None,  # ID сообщения с "ФК на"
     "fk_group_id": None,  # ID группы, где игра
     "fk_amount": 0,  # Сумма ФК
@@ -245,7 +246,6 @@ async def cmd_set_channel(message: Message):
     
     try:
         channel_id = int(args[1])
-        # Проверяем, существует ли канал
         try:
             chat = await bot.get_chat(channel_id)
             if chat.type not in ["channel"]:
@@ -255,7 +255,6 @@ async def cmd_set_channel(message: Message):
             await message.answer(f"❌ Канал не найден! Убедитесь, что бот добавлен в канал.\nОшибка: {e}")
             return
         
-        # Сохраняем ID канала в БД
         db_data["channel_id"] = channel_id
         save_db()
         await message.answer(f"✅ Канал для публикации чеков установлен!\nID: {channel_id}")
@@ -382,6 +381,7 @@ async def start_fk_process():
     
     db_data["fk_active"] = True
     db_data["fk_target"] = None
+    db_data["fk_target_message_id"] = None
     db_data["fk_current_round"] = 0
     db_data["fk_rounds"] = random.randint(2, 4)
     save_db()
@@ -395,6 +395,7 @@ async def start_fk_process():
         logging.error(f"Ошибка в процессе ФК: {e}")
         db_data["fk_active"] = False
         db_data["fk_target"] = None
+        db_data["fk_target_message_id"] = None
         db_data["fk_message_id"] = None
         db_data["fk_group_id"] = None
         save_db()
@@ -414,6 +415,7 @@ async def fk_round(group_id: str):
         
         db_data["fk_message_id"] = msg.message_id
         db_data["fk_target"] = None
+        db_data["fk_target_message_id"] = None
         save_db()
         
         logging.info(f"Запущен раунд {db_data['fk_current_round']} ФК в группе {group_id} на {amount}")
@@ -429,6 +431,7 @@ async def fk_round(group_id: str):
             if db_data["fk_current_round"] >= db_data["fk_rounds"]:
                 db_data["fk_active"] = False
                 db_data["fk_target"] = None
+                db_data["fk_target_message_id"] = None
                 db_data["fk_message_id"] = None
                 db_data["fk_group_id"] = None
                 save_db()
@@ -441,16 +444,19 @@ async def fk_round(group_id: str):
         logging.error(f"Ошибка в раунде ФК: {e}")
         db_data["fk_active"] = False
         db_data["fk_target"] = None
+        db_data["fk_target_message_id"] = None
         db_data["fk_message_id"] = None
         db_data["fk_group_id"] = None
         save_db()
 
-async def process_fk_win(target_user_id: int, group_id: str, amount: int):
+async def process_fk_win(target_user_id: int, group_id: str, amount: int, target_message_id: int):
     """Обработка победы в ФК"""
     try:
+        # Отправляем "дать [сумма]" в ответ на сообщение победителя
         await bot.send_message(
             chat_id=int(group_id),
-            text=f"дать {amount}"
+            text=f"дать {amount}",
+            reply_to_message_id=target_message_id
         )
         
         logging.info(f"Пользователь {target_user_id} выиграл {amount} в ФК в группе {group_id}")
@@ -458,6 +464,7 @@ async def process_fk_win(target_user_id: int, group_id: str, amount: int):
         if db_data["fk_current_round"] >= db_data["fk_rounds"]:
             db_data["fk_active"] = False
             db_data["fk_target"] = None
+            db_data["fk_target_message_id"] = None
             db_data["fk_message_id"] = None
             db_data["fk_group_id"] = None
             save_db()
@@ -470,6 +477,7 @@ async def process_fk_win(target_user_id: int, group_id: str, amount: int):
         logging.error(f"Ошибка при обработке победы в ФК: {e}")
         db_data["fk_active"] = False
         db_data["fk_target"] = None
+        db_data["fk_target_message_id"] = None
         db_data["fk_message_id"] = None
         db_data["fk_group_id"] = None
         save_db()
@@ -513,7 +521,6 @@ async def send_promo_series():
                 logging.info(f"Промо-сообщения отправлены в группу {group_id}: {num1}, {num2}")
                 await asyncio.sleep(3)
                 
-                # Проверяем последние сообщения на наличие ссылки
                 try:
                     messages = await bot.get_chat_history(chat_id=int(group_id), limit=15)
                     
@@ -605,13 +612,14 @@ async def handle_message(message: Message):
         
         if group_id and str(message.chat.id) == group_id:
             db_data["fk_target"] = target_user_id
+            db_data["fk_target_message_id"] = message.message_id  # Сохраняем ID сообщения победителя
             save_db()
             
             await message.reply(
                 f"🎉 Поздравляю! Ты выиграл {amount}!"
             )
             
-            asyncio.create_task(process_fk_win(target_user_id, group_id, amount))
+            asyncio.create_task(process_fk_win(target_user_id, group_id, amount, message.message_id))
             return
     
     # Проверяем ответ на сообщение бота
