@@ -239,7 +239,7 @@ async def handle_message(message: Message):
                         # Генерируем случайное число
                         random_amount = random.randint(100000, 2500000)
                         await message.reply(
-                            f"дать {random_amount:,}".replace(',', ' '),
+                            f"дать {random_amount:,}",
                             parse_mode=ParseMode.MARKDOWN
                         )
                         logging.info(f"Выдано денег пользователю {user_id}: {random_amount}")
