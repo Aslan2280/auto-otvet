@@ -8,7 +8,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 # ===== НАСТРОЙКИ =====
 BOT_TOKEN = "8882339062:AAETNkeVDrFKTabriCasyit-H4_QMqX5dto"  # Токен от @BotFather
 YOUR_TELEGRAM_ID = 6539341659  # Ваш ID (можно получить у @userinfobot)
-OFFLINE_MINUTES = 0.3           # Через сколько минут бездействия считать вас "не в сети"
+OFFLINE_MINUTES = 1        # Через сколько минут бездействия считать вас "не в сети"
 
 # Храним время вашего последнего взаимодействия с ботом
 last_activity = datetime.now()
