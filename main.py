@@ -34,7 +34,11 @@ db_data = {
     "is_sending": False,  # Флаг отправки
     "last_send": None,  # Время последней отправки
     "send_count": 0,  # Счетчик отправок
-    "user_requests": {}  # Словарь с временем запросов пользователей
+    "user_requests": {},  # Словарь с временем запросов пользователей
+    "ban_active": False,  # Флаг активного бана
+    "ban_target": None,  # ID цели для бана
+    "ban_message_id": None,  # ID сообщения с "Кому бан?"
+    "ban_group_id": None  # ID группы, где был бан
 }
 
 def load_db():
@@ -68,16 +72,18 @@ async def cmd_start(message: Message):
         "👋 Привет! Я многофункциональный бот!\n\n"
         "📌 **Функции:**\n"
         "1️⃣ Отвечаю 'Спасибо тебе' на реплаи с 'дать'\n"
-        "2️⃣ Автоматически отправляю промо-сообщения в группы\n"
-        "3️⃣ Выдаю деньги по запросу 'дай нк' или 'дай денег'\n\n"
+        "2️⃣ Автоматически отправляю промо-сообщения\n"
+        "3️⃣ Выдаю деньги по запросу 'дай нк' или 'дай денег'\n"
+        "4️⃣ Случайно спрашиваю 'Кому бан?' и баню первого ответившего\n\n"
         "⚙️ **Команды администратора:**\n"
         "/start - Это сообщение\n"
-        "/add_group - Добавить текущую группу\n"
-        "/remove_group - Удалить текущую группу\n"
+        "/add_group - Добавить группу\n"
+        "/remove_group - Удалить группу\n"
         "/list_groups - Список групп\n"
         "/send_promo - Отправить промо сейчас\n"
         "/stats - Статистика\n"
-        "/reset_user - Сбросить таймер пользователя (ID)"
+        "/reset_user - Сбросить таймер пользователя\n"
+        "/ban_now - Запустить бан сейчас"
     )
 
 @dp.message(Command("add_group"))
@@ -166,7 +172,8 @@ async def cmd_stats(message: Message):
         f"📤 Всего отправок: {db_data['send_count']}\n"
         f"🕐 Последняя отправка: {last_send}\n"
         f"🔄 Статус: {'Отправка...' if db_data['is_sending'] else 'Ожидание'}\n"
-        f"👥 Пользователей в кэше: {len(db_data['user_requests'])}"
+        f"👥 Пользователей в кэше: {len(db_data['user_requests'])}\n"
+        f"🔨 Бан активен: {'Да' if db_data['ban_active'] else 'Нет'}"
     )
 
 @dp.message(Command("reset_user"))
@@ -189,6 +196,16 @@ async def cmd_reset_user(message: Message):
     else:
         await message.answer(f"ℹ️ Пользователь {user_id} не найден в кэше.")
 
+@dp.message(Command("ban_now"))
+async def cmd_ban_now(message: Message):
+    """Принудительный запуск бана"""
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("⛔ У вас нет прав для этой команды.")
+        return
+    
+    await message.answer("🚀 Запускаю процесс бана...")
+    await start_ban_process()
+
 async def check_money_request(user_id: int) -> tuple:
     """
     Проверяет, может ли пользователь запросить деньги
@@ -202,19 +219,118 @@ async def check_money_request(user_id: int) -> tuple:
         time_diff = current_time - last_request_time
         
         if time_diff < timedelta(minutes=30):
-            # Ждем 30 минут
             wait_seconds = int((timedelta(minutes=30) - time_diff).total_seconds())
             return False, wait_seconds
         else:
-            # Прошло больше 30 минут, обновляем время
             db_data["user_requests"][user_id_str] = current_time.isoformat()
             save_db()
             return True, 0
     else:
-        # Первый запрос
         db_data["user_requests"][user_id_str] = current_time.isoformat()
         save_db()
         return True, 0
+
+async def start_ban_process():
+    """Запуск процесса бана"""
+    if db_data["ban_active"]:
+        logging.warning("Бан уже активен")
+        return
+    
+    if not db_data["groups"]:
+        logging.warning("Нет групп для бана")
+        return
+    
+    db_data["ban_active"] = True
+    db_data["ban_target"] = None
+    save_db()
+    
+    # Выбираем случайную группу
+    group_id = random.choice(db_data["groups"])
+    db_data["ban_group_id"] = group_id
+    
+    try:
+        # Отправляем сообщение "Кому бан?"
+        msg = await bot.send_message(
+            chat_id=int(group_id),
+            text="🔨 Кому бан?"
+        )
+        
+        db_data["ban_message_id"] = msg.message_id
+        save_db()
+        
+        logging.info(f"Запущен процесс бана в группе {group_id}")
+        
+        # Ждем 30 секунд на ответ
+        await asyncio.sleep(30)
+        
+        # Если никто не ответил, отменяем бан
+        if db_data["ban_target"] is None:
+            await bot.send_message(
+                chat_id=int(group_id),
+                text="⏰ Время вышло! Никто не получил бан."
+            )
+            db_data["ban_active"] = False
+            db_data["ban_target"] = None
+            db_data["ban_message_id"] = None
+            db_data["ban_group_id"] = None
+            save_db()
+            logging.info("Бан отменен - никто не ответил")
+            
+    except Exception as e:
+        logging.error(f"Ошибка в процессе бана: {e}")
+        db_data["ban_active"] = False
+        db_data["ban_target"] = None
+        db_data["ban_message_id"] = None
+        db_data["ban_group_id"] = None
+        save_db()
+
+async def process_ban(target_user_id: int, group_id: str):
+    """Обработка бана пользователя"""
+    try:
+        # Блокируем пользователя
+        await bot.ban_chat_member(
+            chat_id=int(group_id),
+            user_id=target_user_id
+        )
+        
+        # Отправляем сообщение о бане
+        await bot.send_message(
+            chat_id=int(group_id),
+            text=f"✅ Пользователь {target_user_id} забанен!"
+        )
+        
+        logging.info(f"Пользователь {target_user_id} забанен в группе {group_id}")
+        
+        # Ждем 5 минут
+        await asyncio.sleep(300)  # 5 минут
+        
+        # Разблокируем пользователя
+        await bot.unban_chat_member(
+            chat_id=int(group_id),
+            user_id=target_user_id
+        )
+        
+        # Отправляем сообщение о разбане
+        await bot.send_message(
+            chat_id=int(group_id),
+            text=f"✅ Пользователь {target_user_id} разбанен!"
+        )
+        
+        logging.info(f"Пользователь {target_user_id} разбанен в группе {group_id}")
+        
+    except Exception as e:
+        logging.error(f"Ошибка при бане/разбане: {e}")
+        await bot.send_message(
+            chat_id=int(group_id),
+            text=f"❌ Ошибка при бане пользователя: {e}"
+        )
+    finally:
+        # Сбрасываем флаги
+        db_data["ban_active"] = False
+        db_data["ban_target"] = None
+        db_data["ban_message_id"] = None
+        db_data["ban_group_id"] = None
+        save_db()
 
 @dp.message()
 async def handle_message(message: Message):
@@ -223,6 +339,29 @@ async def handle_message(message: Message):
     # Игнорируем сообщения от самого бота
     if message.from_user.id == bot.id:
         return
+    
+    # Проверка на ответ на "Кому бан?"
+    if (db_data["ban_active"] and 
+        message.reply_to_message and 
+        message.reply_to_message.message_id == db_data["ban_message_id"] and
+        db_data["ban_target"] is None):
+        
+        # Первый ответивший получает бан
+        target_user_id = message.from_user.id
+        group_id = db_data["ban_group_id"]
+        
+        if group_id and str(message.chat.id) == group_id:
+            db_data["ban_target"] = target_user_id
+            save_db()
+            
+            # Отвечаем, что бан будет
+            await message.reply(
+                f"🔨 Пользователь {target_user_id} будет забанен!"
+            )
+            
+            # Запускаем процесс бана
+            asyncio.create_task(process_ban(target_user_id, group_id))
+            return
     
     # Проверяем ответ на сообщение бота
     if message.reply_to_message:
@@ -236,15 +375,13 @@ async def handle_message(message: Message):
                     can_request, wait_time = await check_money_request(user_id)
                     
                     if can_request:
-                        # Генерируем случайное число
                         random_amount = random.randint(100000, 2500000)
                         await message.reply(
-                            f"дать {random_amount:}"
+                            f"дать {random_amount}",
                             parse_mode=ParseMode.MARKDOWN
                         )
                         logging.info(f"Выдано денег пользователю {user_id}: {random_amount}")
                     else:
-                        # Ждем 30 минут
                         minutes = wait_time // 60
                         seconds = wait_time % 60
                         await message.reply(
@@ -253,7 +390,7 @@ async def handle_message(message: Message):
                         )
                         logging.info(f"Пользователю {user_id} отказано в выдаче (ждать {wait_time}с)")
                 
-                # Проверка на обычное "дать" (без "нк" или "денег")
+                # Проверка на обычное "дать"
                 elif PATTERN_DAT.search(message.text) and not PATTERN_MONEY.search(message.text):
                     try:
                         await message.reply(
@@ -285,25 +422,21 @@ async def send_promo_series():
     try:
         for group_id in db_data["groups"]:
             try:
-                # Генерируем случайные числа
                 num1 = random.randint(1000, 5000000)
                 num2 = random.randint(1, 15)
                 
-                # Отправляем первое сообщение
                 await bot.send_message(
                     chat_id=int(group_id),
                     text="создать промо"
                 )
                 await asyncio.sleep(1)
                 
-                # Отправляем второе сообщение
                 await bot.send_message(
                     chat_id=int(group_id),
                     text=str(num1)
                 )
                 await asyncio.sleep(1)
                 
-                # Отправляем третье сообщение
                 await bot.send_message(
                     chat_id=int(group_id),
                     text=str(num2)
@@ -324,13 +457,22 @@ async def send_promo_series():
         save_db()
 
 async def random_send_scheduler():
-    """Фоновая задача для случайной отправки промо"""
+    """Фоновая задача для случайной отправки промо и бана"""
     while True:
         try:
-            wait_time = random.randint(1800, 7200)  # 30-120 минут
-            logging.info(f"Следующая отправка через {wait_time//60} минут")
+            # Ждем 15-30 минут перед следующим действием
+            wait_time = random.randint(900, 1800)  # 15-30 минут
+            logging.info(f"Следующее действие через {wait_time//60} минут")
             await asyncio.sleep(wait_time)
-            await send_promo_series()
+            
+            # Случайно выбираем действие: промо или бан
+            action = random.choice(['promo', 'ban', 'promo', 'promo'])  # 75% промо, 25% бан
+            
+            if action == 'ban' and not db_data["ban_active"]:
+                await start_ban_process()
+            else:
+                await send_promo_series()
+                
         except Exception as e:
             logging.error(f"Ошибка в планировщике: {e}")
             await asyncio.sleep(60)
@@ -368,7 +510,8 @@ async def main():
         types.BotCommand(command="list_groups", description="Список групп"),
         types.BotCommand(command="send_promo", description="Отправить промо сейчас"),
         types.BotCommand(command="stats", description="Статистика"),
-        types.BotCommand(command="reset_user", description="Сбросить таймер пользователя")
+        types.BotCommand(command="reset_user", description="Сбросить таймер пользователя"),
+        types.BotCommand(command="ban_now", description="Запустить бан сейчас")
     ])
     
     asyncio.create_task(random_send_scheduler())
