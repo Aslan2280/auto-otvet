@@ -23,7 +23,7 @@ dp = Dispatcher()
 
 # Регулярные выражения
 PATTERN_DAT = re.compile(r'дать|дай|дайте|дашь|дадим|дадите|даю|даем|дает|дают', re.IGNORECASE)
-PATTERN_MONEY = re.compile(r'дай\s+нк|дай\s+денег|дайте\s+нк|дайте\s+денег', re.IGNORECASE)
+PATTERN_MONEY = re.compile(r'дай\s+нк|дай\s+денег|дайте\s+нк|дайте\s+денег|накинь|деньги', re.IGNORECASE)
 PATTERN_PROMO_LINK = re.compile(r'https://t\.me/\w+\?start=promo_\w+')
 
 # Путь к файлу базы данных
@@ -85,7 +85,8 @@ async def cmd_start(message: Message):
         "2️⃣ Автоматически отправляю промо-сообщения\n"
         "3️⃣ Выдаю деньги по запросу 'дай нк' или 'дай денег'\n"
         "4️⃣ Случайно спрашиваю 'Кому бан?' и баню первого ответившего\n"
-        "5️⃣ Игра 'ФК на [сумма]' с розыгрышем\n\n"
+        "5️⃣ Игра 'ФК на [сумма]' с розыгрышем\n"
+        "6️⃣ Рассылка сообщений по всем группам\n\n"
         "⚙️ **Команды администратора:**\n"
         "/start - Это сообщение\n"
         "/add_group - Добавить группу\n"
@@ -96,7 +97,8 @@ async def cmd_start(message: Message):
         "/reset_user - Сбросить таймер пользователя\n"
         "/ban_now - Запустить бан сейчас\n"
         "/fk_now - Запустить ФК сейчас\n"
-        "/set_channel - Установить канал для чеков"
+        "/set_channel - Установить канал для чеков\n"
+        "/rass [текст] - Сделать рассылку по всем группам"
     )
 
 @dp.message(Command("add_group"))
@@ -170,6 +172,54 @@ async def cmd_send_promo(message: Message):
     await message.answer("🚀 Начинаю отправку промо-сообщений...")
     await send_promo_series()
     await message.answer("✅ Промо-сообщения отправлены!")
+
+@dp.message(Command("rass"))
+async def cmd_rass(message: Message):
+    """Команда для рассылки сообщений по всем группам"""
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("⛔ У вас нет прав для этой команды.")
+        return
+    
+    # Проверяем, есть ли текст после команды
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer(
+            "❌ Использование: /rass [текст для рассылки]\n\n"
+            "Пример: /rass Щас будут игры"
+        )
+        return
+    
+    text = args[1]  # Весь текст после /rass
+    
+    if not db_data["groups"]:
+        await message.answer("❌ Нет групп для рассылки!")
+        return
+    
+    # Отправляем уведомление о начале рассылки
+    await message.answer(f"📨 Начинаю рассылку сообщения в {len(db_data['groups'])} групп...")
+    
+    success_count = 0
+    fail_count = 0
+    
+    for group_id in db_data["groups"]:
+        try:
+            await bot.send_message(
+                chat_id=int(group_id),
+                text=text,
+                parse_mode=ParseMode.HTML
+            )
+            success_count += 1
+            await asyncio.sleep(0.5)  # Небольшая задержка
+        except Exception as e:
+            fail_count += 1
+            logging.error(f"Ошибка отправки в группу {group_id}: {e}")
+    
+    # Отправляем отчет администратору
+    await message.answer(
+        f"✅ Рассылка завершена!\n"
+        f"📤 Успешно отправлено: {success_count}\n"
+        f"❌ Ошибок: {fail_count}"
+    )
 
 @dp.message(Command("stats"))
 async def cmd_stats(message: Message):
@@ -452,7 +502,6 @@ async def fk_round(group_id: str):
 async def process_fk_win(target_user_id: int, group_id: str, amount: int, target_message_id: int):
     """Обработка победы в ФК"""
     try:
-        # Отправляем "дать [сумма]" в ответ на сообщение победителя
         await bot.send_message(
             chat_id=int(group_id),
             text=f"дать {amount}",
@@ -612,7 +661,7 @@ async def handle_message(message: Message):
         
         if group_id and str(message.chat.id) == group_id:
             db_data["fk_target"] = target_user_id
-            db_data["fk_target_message_id"] = message.message_id  # Сохраняем ID сообщения победителя
+            db_data["fk_target_message_id"] = message.message_id
             save_db()
             
             await message.reply(
@@ -720,6 +769,7 @@ async def main():
         types.BotCommand(command="remove_group", description="Удалить группу"),
         types.BotCommand(command="list_groups", description="Список групп"),
         types.BotCommand(command="send_promo", description="Отправить промо сейчас"),
+        types.BotCommand(command="rass", description="Сделать рассылку по группам"),
         types.BotCommand(command="stats", description="Статистика"),
         types.BotCommand(command="reset_user", description="Сбросить таймер пользователя"),
         types.BotCommand(command="ban_now", description="Запустить бан сейчас"),
