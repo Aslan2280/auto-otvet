@@ -1,83 +1,198 @@
 import asyncio
-from datetime import datetime, timedelta
+import logging
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import Message
-from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.enums import ParseMode
 
-# ===== НАСТРОЙКИ =====
-BOT_TOKEN = "8882339062:AAETNkeVDrFKTabriCasyit-H4_QMqX5dto"  # Токен от @BotFather
-YOUR_TELEGRAM_ID = 6539341659  # Ваш ID (можно получить у @userinfobot)
-OFFLINE_MINUTES = 1        # Через сколько минут бездействия считать вас "не в сети"
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
 
-# Храним время вашего последнего взаимодействия с ботом
-last_activity = datetime.now()
+# Токен бота и ID администратора
+BOT_TOKEN = "8882339062:AAETNkeVDrFKTabriCasyit-H4_QMqX5dto"
+ADMIN_ID = 6539341659  # Ваш ID
 
-# Инициализация
-storage = MemoryStorage()
+# Инициализация бота и диспетчера
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(storage=storage)
+dp = Dispatcher()
 
-# ===== ОБНОВЛЯЕМ ВРЕМЯ АКТИВНОСТИ =====
-@dp.message()
-async def track_user_activity(message: Message):
-    """Обновляем время, когда вы пишете боту"""
-    global last_activity
-    
-    # Если сообщение от вас — обновляем время
-    if message.from_user.id == YOUR_TELEGRAM_ID:
-        last_activity = datetime.now()
-        # Можно добавить отладочный вывод
-        print(f"✅ Ваша активность обновлена: {last_activity.strftime('%H:%M:%S')}")
-    
-    # Если сообщение от другого пользователя — проверяем ваш статус
-    elif message.from_user.id != YOUR_TELEGRAM_ID and not message.from_user.is_bot:
-        await handle_incoming_message(message)
+# Словарь для хранения ID групп
+group_ids = set()
 
-# ===== ОБРАБОТКА СООБЩЕНИЙ ОТ ДРУГИХ ЛЮДЕЙ =====
-async def handle_incoming_message(message: Message):
-    """Обрабатываем сообщения от других пользователей"""
-    global last_activity
-    
-    # Вычисляем, сколько прошло времени с вашей последней активности
-    time_diff = datetime.now() - last_activity
-    is_online = time_diff.total_seconds() < (OFFLINE_MINUTES * 60)
-    
-    # Проверяем, был ли уже автоответ в этом диалоге (чтобы не спамить)
-    user_id = message.from_user.id
-    # Используем FSM или просто словарь (для простоты покажу через переменную)
-    # В реальном проекте лучше использовать FSM или базу данных
-    
-    if not is_online:
-        await message.reply(
-            "В данный момент я не являюсь в сети. Ожидайте, отвечу в течение 5-10 минут."
-        )
-        print(f"📩 Автоответ отправлен пользователю {user_id}")
-
-# ===== КОМАНДА ДЛЯ ПРОВЕРКИ СТАТУСА =====
-@dp.message(Command("status"))
-async def show_status(message: Message):
-    """Команда для проверки текущего статуса"""
-    if message.from_user.id != YOUR_TELEGRAM_ID:
-        await message.reply("❌ У вас нет доступа к этой команде.")
-        return
-    
-    time_diff = datetime.now() - last_activity
-    is_online = time_diff.total_seconds() < (OFFLINE_MINUTES * 60)
-    status = "🟢 Онлайн" if is_online else "🔴 Офлайн"
-    
-    await message.reply(
-        f"📊 Ваш статус: {status}\n"
-        f"⏱ Последняя активность: {time_diff.seconds // 60} мин {time_diff.seconds % 60} сек назад\n"
-        f"⏰ Порог офлайна: {OFFLINE_MINUTES} минут"
+@dp.message(Command("start"))
+async def cmd_start(message: Message):
+    """Обработчик команды /start"""
+    await message.answer(
+        "👋 Привет! Я бот для рассылки сообщений.\n\n"
+        "📌 Я буду рассылать ваши сообщения во все группы, где я являюсь администратором.\n"
+        "Просто отправьте мне сообщение в личные сообщения."
     )
 
-# ===== ЗАПУСК =====
+@dp.message(Command("groups"))
+async def cmd_groups(message: Message):
+    """Показать список групп, где бот админ"""
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("⛔ У вас нет прав для этой команды.")
+        return
+    
+    if not group_ids:
+        await message.answer("📭 Бот не состоит ни в одной группе как администратор.")
+        return
+    
+    groups_list = []
+    for group_id in group_ids:
+        try:
+            chat = await bot.get_chat(group_id)
+            groups_list.append(f"• {chat.title} (ID: {group_id})")
+        except:
+            groups_list.append(f"• Группа (ID: {group_id})")
+    
+    await message.answer(
+        f"📋 Список групп, где бот является администратором:\n\n" + "\n".join(groups_list)
+    )
+
+@dp.message()
+async def handle_message(message: Message):
+    """Обработчик всех сообщений от администратора"""
+    # Проверяем, что сообщение от администратора и это личный чат
+    if (message.from_user.id == ADMIN_ID and 
+        message.chat.type == "private" and 
+        message.text):
+        
+        # Получаем текст сообщения
+        text = message.text
+        
+        # Отправляем уведомление о начале рассылки
+        await message.answer(f"📨 Начинаю рассылку сообщения во {len(group_ids)} групп...")
+        
+        # Счетчики для статистики
+        success_count = 0
+        fail_count = 0
+        
+        # Рассылаем сообщение во все группы
+        for group_id in group_ids:
+            try:
+                # Отправляем сообщение в группу
+                await bot.send_message(
+                    chat_id=group_id,
+                    text=text,
+                    parse_mode=ParseMode.HTML
+                )
+                success_count += 1
+                await asyncio.sleep(0.5)  # Небольшая задержка, чтобы не превысить лимиты
+            except Exception as e:
+                fail_count += 1
+                logging.error(f"Ошибка отправки в группу {group_id}: {e}")
+        
+        # Отправляем отчет администратору
+        await message.answer(
+            f"✅ Рассылка завершена!\n"
+            f"📤 Успешно отправлено: {success_count}\n"
+            f"❌ Ошибок: {fail_count}"
+        )
+    
+    # Если сообщение от обычного пользователя
+    elif message.chat.type == "private" and message.from_user.id != ADMIN_ID:
+        await message.answer(
+            "⛔ Извините, этот бот предназначен только для администратора.\n"
+            "Если вы администратор, обратитесь к разработчику."
+        )
+
+@dp.my_chat_member()
+async def my_chat_member_handler(update: types.ChatMemberUpdated):
+    """Обработчик изменений статуса бота в чатах"""
+    # Если бота добавили в группу как администратора
+    if update.new_chat_member.status in ["administrator", "member"]:
+        chat_id = update.chat.id
+        chat_type = update.chat.type
+        
+        # Проверяем, что это группа или супергруппа
+        if chat_type in ["group", "supergroup"]:
+            try:
+                # Проверяем, является ли бот администратором
+                chat_member = await bot.get_chat_member(chat_id, bot.id)
+                if chat_member.status == "administrator":
+                    group_ids.add(chat_id)
+                    logging.info(f"Бот добавлен как администратор в группу {chat_id}")
+                    
+                    # Отправляем уведомление администратору
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"✅ Бот добавлен как администратор в группу!\n"
+                        f"ID: {chat_id}\n"
+                        f"Название: {update.chat.title or 'Без названия'}"
+                    )
+            except Exception as e:
+                logging.error(f"Ошибка при проверке прав в группе {chat_id}: {e}")
+    
+    # Если бота удалили из группы
+    elif update.old_chat_member.status in ["administrator", "member"]:
+        chat_id = update.chat.id
+        if chat_id in group_ids:
+            group_ids.remove(chat_id)
+            logging.info(f"Бот удален из группы {chat_id}")
+            
+            # Отправляем уведомление администратору
+            await bot.send_message(
+                ADMIN_ID,
+                f"❌ Бот удален из группы!\n"
+                f"ID: {chat_id}\n"
+                f"Название: {update.chat.title or 'Без названия'}"
+            )
+
+@dp.message(Command("update_groups"))
+async def cmd_update_groups(message: Message):
+    """Обновить список групп, где бот админ"""
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("⛔ У вас нет прав для этой команды.")
+        return
+    
+    await message.answer("🔄 Обновляю список групп...")
+    
+    # Очищаем текущий список
+    group_ids.clear()
+    
+    # Получаем все чаты, где бот участвует
+    try:
+        # Получаем обновления
+        updates = await bot.get_updates()
+        
+        # Проверяем все чаты в которых бот является администратором
+        # В реальности, бот автоматически получает обновления через my_chat_member
+        # Эта команда нужна для ручного обновления
+        
+        # Просто отправляем сообщение с текущим списком
+        if not group_ids:
+            await message.answer("📭 Бот не состоит ни в одной группе как администратор.\n"
+                               "Пожалуйста, добавьте бота в группы как администратора.")
+        else:
+            groups_list = []
+            for group_id in group_ids:
+                try:
+                    chat = await bot.get_chat(group_id)
+                    groups_list.append(f"• {chat.title} (ID: {group_id})")
+                except:
+                    groups_list.append(f"• Группа (ID: {group_id})")
+            
+            await message.answer(
+                f"📋 Обновленный список групп:\n\n" + "\n".join(groups_list)
+            )
+    except Exception as e:
+        await message.answer(f"❌ Ошибка при обновлении: {e}")
+
 async def main():
-    print("🤖 Бот запущен!")
-    print(f"👤 Ваш ID: {YOUR_TELEGRAM_ID}")
-    print(f"⏱ Порог офлайна: {OFFLINE_MINUTES} минут")
-    print("📌 Для обновления активности просто напишите боту любое сообщение")
+    """Главная функция запуска бота"""
+    # Запускаем бота
+    logging.info("Бот запущен!")
+    
+    # Устанавливаем команды
+    await bot.set_my_commands([
+        types.BotCommand(command="start", description="Запустить бота"),
+        types.BotCommand(command="groups", description="Показать список групп"),
+        types.BotCommand(command="update_groups", description="Обновить список групп")
+    ])
+    
+    # Запускаем polling
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
