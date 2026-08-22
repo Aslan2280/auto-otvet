@@ -290,7 +290,7 @@ async def process_ban(target_user_id: int, group_id: str):
         # Отправляем команду "блок [id]"
         await bot.send_message(
             chat_id=int(group_id),
-            text=f"блок {target_user_id}"
+            text=f"блок {target_user_id} По_приколу"
         )
         
         logging.info(f"Отправлена команда блок {target_user_id} в группе {group_id}")
