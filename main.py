@@ -16,7 +16,6 @@ logging.basicConfig(level=logging.INFO)
 # Токен бота
 BOT_TOKEN = "8882339062:AAETNkeVDrFKTabriCasyit-H4_QMqX5dto"
 ADMIN_ID = 6539341659  # Ваш ID для уведомлений
-CHANNEL_ID = -1001234567890  # ЗАМЕНИТЕ НА ID ВАШЕГО КАНАЛА
 
 # Инициализация бота и диспетчера
 bot = Bot(token=BOT_TOKEN)
@@ -47,7 +46,8 @@ db_data = {
     "fk_group_id": None,  # ID группы, где игра
     "fk_amount": 0,  # Сумма ФК
     "fk_rounds": 0,  # Количество раундов
-    "fk_current_round": 0  # Текущий раунд
+    "fk_current_round": 0,  # Текущий раунд
+    "channel_id": None  # ID канала для публикации чеков
 }
 
 def load_db():
@@ -178,6 +178,7 @@ async def cmd_stats(message: Message):
         return
     
     last_send = db_data["last_send"] or "Никогда"
+    channel_id = db_data.get("channel_id") or "Не установлен"
     await message.answer(
         f"📊 **Статистика бота:**\n\n"
         f"📌 Групп в списке: {len(db_data['groups'])}\n"
@@ -186,7 +187,8 @@ async def cmd_stats(message: Message):
         f"🔄 Статус: {'Отправка...' if db_data['is_sending'] else 'Ожидание'}\n"
         f"👥 Пользователей в кэше: {len(db_data['user_requests'])}\n"
         f"🔨 Бан активен: {'Да' if db_data['ban_active'] else 'Нет'}\n"
-        f"🎮 ФК активен: {'Да' if db_data['fk_active'] else 'Нет'}"
+        f"🎮 ФК активен: {'Да' if db_data['fk_active'] else 'Нет'}\n"
+        f"📢 Канал для чеков: {channel_id}"
     )
 
 @dp.message(Command("reset_user"))
@@ -249,8 +251,8 @@ async def cmd_set_channel(message: Message):
             if chat.type not in ["channel"]:
                 await message.answer("❌ Указанный ID не является каналом!")
                 return
-        except:
-            await message.answer("❌ Канал не найден! Убедитесь, что бот добавлен в канал.")
+        except Exception as e:
+            await message.answer(f"❌ Канал не найден! Убедитесь, что бот добавлен в канал.\nОшибка: {e}")
             return
         
         # Сохраняем ID канала в БД
@@ -339,7 +341,7 @@ async def process_ban(target_user_id: int, group_id: str):
     try:
         await bot.send_message(
             chat_id=int(group_id),
-            text=f"блок {target_user_id} По_приколу"
+            text=f"блок {target_user_id}"
         )
         
         logging.info(f"Отправлена команда блок {target_user_id} в группе {group_id}")
@@ -354,10 +356,13 @@ async def process_ban(target_user_id: int, group_id: str):
         
     except Exception as e:
         logging.error(f"Ошибка при отправке команд бана: {e}")
-        await bot.send_message(
-            chat_id=int(group_id),
-            text=f"❌ Ошибка при обработке бана: {e}"
-        )
+        try:
+            await bot.send_message(
+                chat_id=int(group_id),
+                text=f"❌ Ошибка при обработке бана: {e}"
+            )
+        except:
+            pass
     finally:
         db_data["ban_active"] = False
         db_data["ban_target"] = None
@@ -378,16 +383,14 @@ async def start_fk_process():
     db_data["fk_active"] = True
     db_data["fk_target"] = None
     db_data["fk_current_round"] = 0
-    db_data["fk_rounds"] = random.randint(2, 4)  # 2-4 раунда
+    db_data["fk_rounds"] = random.randint(2, 4)
     save_db()
     
     group_id = random.choice(db_data["groups"])
     db_data["fk_group_id"] = group_id
     
     try:
-        # Запускаем первый раунд
         await fk_round(group_id)
-        
     except Exception as e:
         logging.error(f"Ошибка в процессе ФК: {e}")
         db_data["fk_active"] = False
@@ -399,13 +402,11 @@ async def start_fk_process():
 async def fk_round(group_id: str):
     """Проведение одного раунда ФК"""
     try:
-        # Генерируем случайную сумму
         amount = random.randint(50000, 2500000)
         db_data["fk_amount"] = amount
         db_data["fk_current_round"] += 1
         save_db()
         
-        # Отправляем сообщение "ФК на [сумма]"
         msg = await bot.send_message(
             chat_id=int(group_id),
             text=f"🎯 ФК на {amount}"
@@ -417,17 +418,14 @@ async def fk_round(group_id: str):
         
         logging.info(f"Запущен раунд {db_data['fk_current_round']} ФК в группе {group_id} на {amount}")
         
-        # Ждем 30 секунд на ответ
         await asyncio.sleep(30)
         
-        # Если никто не ответил
         if db_data["fk_target"] is None:
             await bot.send_message(
                 chat_id=int(group_id),
                 text="⏰ Время вышло! Никто не получил награду."
             )
             
-            # Проверяем, нужно ли продолжать
             if db_data["fk_current_round"] >= db_data["fk_rounds"]:
                 db_data["fk_active"] = False
                 db_data["fk_target"] = None
@@ -436,17 +434,20 @@ async def fk_round(group_id: str):
                 save_db()
                 logging.info("ФК завершен - все раунды прошли")
             else:
-                # Запускаем следующий раунд
                 await asyncio.sleep(2)
                 await fk_round(group_id)
                 
     except Exception as e:
         logging.error(f"Ошибка в раунде ФК: {e}")
+        db_data["fk_active"] = False
+        db_data["fk_target"] = None
+        db_data["fk_message_id"] = None
+        db_data["fk_group_id"] = None
+        save_db()
 
 async def process_fk_win(target_user_id: int, group_id: str, amount: int):
     """Обработка победы в ФК"""
     try:
-        # Отвечаем победителю
         await bot.send_message(
             chat_id=int(group_id),
             text=f"дать {amount}"
@@ -454,7 +455,6 @@ async def process_fk_win(target_user_id: int, group_id: str, amount: int):
         
         logging.info(f"Пользователь {target_user_id} выиграл {amount} в ФК в группе {group_id}")
         
-        # Проверяем, нужно ли продолжать
         if db_data["fk_current_round"] >= db_data["fk_rounds"]:
             db_data["fk_active"] = False
             db_data["fk_target"] = None
@@ -463,12 +463,16 @@ async def process_fk_win(target_user_id: int, group_id: str, amount: int):
             save_db()
             logging.info("ФК завершен - все раунды прошли")
         else:
-            # Ждем 2 секунды и запускаем следующий раунд
             await asyncio.sleep(2)
             await fk_round(group_id)
             
     except Exception as e:
         logging.error(f"Ошибка при обработке победы в ФК: {e}")
+        db_data["fk_active"] = False
+        db_data["fk_target"] = None
+        db_data["fk_message_id"] = None
+        db_data["fk_group_id"] = None
+        save_db()
 
 async def send_promo_series():
     """Отправка серии промо-сообщений во все группы"""
@@ -501,30 +505,27 @@ async def send_promo_series():
                 )
                 await asyncio.sleep(1)
                 
-                msg = await bot.send_message(
+                await bot.send_message(
                     chat_id=int(group_id),
                     text=str(num2)
                 )
                 
                 logging.info(f"Промо-сообщения отправлены в группу {group_id}: {num1}, {num2}")
-                await asyncio.sleep(2)
+                await asyncio.sleep(3)
                 
-                # Ждем ответ от другого бота (сообщение со ссылкой)
-                # Проверяем последние сообщения в группе на наличие ссылки
-                await asyncio.sleep(5)  # Даем время другому боту ответить
-                
-                # Получаем последние сообщения
-                messages = await bot.get_chat_history(chat_id=int(group_id), limit=10)
-                
-                for m in messages:
-                    if m.text and PATTERN_PROMO_LINK.search(m.text):
-                        # Нашли ссылку на промо
-                        link_match = PATTERN_PROMO_LINK.search(m.text)
-                        if link_match:
-                            promo_link = link_match.group(0)
-                            # Публикуем в канале
-                            await publish_check(promo_link, group_id)
-                        break
+                # Проверяем последние сообщения на наличие ссылки
+                try:
+                    messages = await bot.get_chat_history(chat_id=int(group_id), limit=15)
+                    
+                    for m in messages:
+                        if m.text and PATTERN_PROMO_LINK.search(m.text):
+                            link_match = PATTERN_PROMO_LINK.search(m.text)
+                            if link_match:
+                                promo_link = link_match.group(0)
+                                await publish_check(promo_link, group_id)
+                            break
+                except Exception as e:
+                    logging.error(f"Ошибка при поиске ссылки в группе {group_id}: {e}")
                 
                 await asyncio.sleep(1)
                 
@@ -547,11 +548,9 @@ async def publish_check(promo_link: str, group_id: str):
         return
     
     try:
-        # Получаем информацию о группе
         chat = await bot.get_chat(int(group_id))
         group_name = chat.title or "Группа"
         
-        # Публикуем пост
         await bot.send_message(
             chat_id=channel_id,
             text=f"Держите чек: {promo_link}\n\n📌 Группа: {group_name}"
@@ -568,6 +567,10 @@ async def handle_message(message: Message):
     
     # Игнорируем сообщения от самого бота
     if message.from_user.id == bot.id:
+        return
+    
+    # Проверяем, что сообщение из группы или супергруппы
+    if message.chat.type not in ["group", "supergroup"]:
         return
     
     # Проверка на ответ на "Кому бан?"
@@ -658,12 +661,10 @@ async def random_send_scheduler():
     """Фоновая задача для случайной отправки промо, бана и ФК"""
     while True:
         try:
-            # Ждем 10-20 минут перед следующим действием
-            wait_time = random.randint(600, 1200)  # 10-20 минут
+            wait_time = random.randint(600, 1200)
             logging.info(f"Следующее действие через {wait_time//60} минут")
             await asyncio.sleep(wait_time)
             
-            # Случайно выбираем действие
             actions = ['promo', 'ban', 'fk', 'promo', 'promo', 'fk']
             action = random.choice(actions)
             
