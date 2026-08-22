@@ -21,8 +21,9 @@ ADMIN_ID = 6539341659  # Ваш ID для уведомлений
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Регулярное выражение для поиска слова "дать"
-PATTERN = re.compile(r'дать|дай|дайте|дашь|дадим|дадите|даю|даем|дает|дают', re.IGNORECASE)
+# Регулярные выражения
+PATTERN_DAT = re.compile(r'дать|дай|дайте|дашь|дадим|дадите|даю|даем|дает|дают', re.IGNORECASE)
+PATTERN_MONEY = re.compile(r'дай\s+нк|дай\s+денег|дайте\s+нк|дайте\s+денег', re.IGNORECASE)
 
 # Путь к файлу базы данных
 DB_FILE = "bot_database.json"
@@ -32,7 +33,8 @@ db_data = {
     "groups": [],  # Список ID групп
     "is_sending": False,  # Флаг отправки
     "last_send": None,  # Время последней отправки
-    "send_count": 0  # Счетчик отправок
+    "send_count": 0,  # Счетчик отправок
+    "user_requests": {}  # Словарь с временем запросов пользователей
 }
 
 def load_db():
@@ -66,14 +68,16 @@ async def cmd_start(message: Message):
         "👋 Привет! Я многофункциональный бот!\n\n"
         "📌 **Функции:**\n"
         "1️⃣ Отвечаю 'Спасибо тебе' на реплаи с 'дать'\n"
-        "2️⃣ Автоматически отправляю промо-сообщения в группы\n\n"
+        "2️⃣ Автоматически отправляю промо-сообщения в группы\n"
+        "3️⃣ Выдаю деньги по запросу 'дай нк' или 'дай денег'\n\n"
         "⚙️ **Команды администратора:**\n"
         "/start - Это сообщение\n"
         "/add_group - Добавить текущую группу\n"
         "/remove_group - Удалить текущую группу\n"
         "/list_groups - Список групп\n"
         "/send_promo - Отправить промо сейчас\n"
-        "/stats - Статистика"
+        "/stats - Статистика\n"
+        "/reset_user - Сбросить таймер пользователя (ID)"
     )
 
 @dp.message(Command("add_group"))
@@ -85,7 +89,6 @@ async def cmd_add_group(message: Message):
     
     chat_id = str(message.chat.id)
     
-    # Проверяем, что это группа
     if message.chat.type not in ["group", "supergroup"]:
         await message.answer("❌ Эта команда работает только в группах!")
         return
@@ -162,8 +165,56 @@ async def cmd_stats(message: Message):
         f"📌 Групп в списке: {len(db_data['groups'])}\n"
         f"📤 Всего отправок: {db_data['send_count']}\n"
         f"🕐 Последняя отправка: {last_send}\n"
-        f"🔄 Статус: {'Отправка...' if db_data['is_sending'] else 'Ожидание'}"
+        f"🔄 Статус: {'Отправка...' if db_data['is_sending'] else 'Ожидание'}\n"
+        f"👥 Пользователей в кэше: {len(db_data['user_requests'])}"
     )
+
+@dp.message(Command("reset_user"))
+async def cmd_reset_user(message: Message):
+    """Сбросить таймер пользователя"""
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("⛔ У вас нет прав для этой команды.")
+        return
+    
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("❌ Использование: /reset_user [user_id]")
+        return
+    
+    user_id = args[1]
+    if user_id in db_data["user_requests"]:
+        del db_data["user_requests"][user_id]
+        save_db()
+        await message.answer(f"✅ Таймер пользователя {user_id} сброшен!")
+    else:
+        await message.answer(f"ℹ️ Пользователь {user_id} не найден в кэше.")
+
+async def check_money_request(user_id: int) -> tuple:
+    """
+    Проверяет, может ли пользователь запросить деньги
+    Возвращает: (можно_ли, время_ожидания_в_секундах)
+    """
+    user_id_str = str(user_id)
+    current_time = datetime.now()
+    
+    if user_id_str in db_data["user_requests"]:
+        last_request_time = datetime.fromisoformat(db_data["user_requests"][user_id_str])
+        time_diff = current_time - last_request_time
+        
+        if time_diff < timedelta(minutes=30):
+            # Ждем 30 минут
+            wait_seconds = int((timedelta(minutes=30) - time_diff).total_seconds())
+            return False, wait_seconds
+        else:
+            # Прошло больше 30 минут, обновляем время
+            db_data["user_requests"][user_id_str] = current_time.isoformat()
+            save_db()
+            return True, 0
+    else:
+        # Первый запрос
+        db_data["user_requests"][user_id_str] = current_time.isoformat()
+        save_db()
+        return True, 0
 
 @dp.message()
 async def handle_message(message: Message):
@@ -176,24 +227,47 @@ async def handle_message(message: Message):
     # Проверяем ответ на сообщение бота
     if message.reply_to_message:
         if message.reply_to_message.from_user.id == bot.id:
-            if message.text and PATTERN.search(message.text):
-                try:
-                    user_mention = f"@{message.from_user.username}" if message.from_user.username else f"[{message.from_user.first_name}](tg://user?id={message.from_user.id})"
+            if message.text:
+                user_id = message.from_user.id
+                user_mention = f"@{message.from_user.username}" if message.from_user.username else f"[{message.from_user.first_name}](tg://user?id={user_id})"
+                
+                # Проверка на "дай нк" или "дай денег"
+                if PATTERN_MONEY.search(message.text):
+                    can_request, wait_time = await check_money_request(user_id)
                     
-                    await message.reply(
-                        f"Спасибо тебе, {user_mention}! 🎉",
-                        parse_mode=ParseMode.MARKDOWN,
-                        disable_notification=False
-                    )
-                    
-                    logging.info(f"Бот ответил пользователю {message.from_user.id} на сообщение: {message.text}")
-                    
-                except Exception as e:
-                    logging.error(f"Ошибка при отправке ответа: {e}")
+                    if can_request:
+                        # Генерируем случайное число
+                        random_amount = random.randint(100000, 2500000)
+                        await message.reply(
+                            f"дать {random_amount:,}".replace(',', ' '),
+                            parse_mode=ParseMode.MARKDOWN
+                        )
+                        logging.info(f"Выдано денег пользователю {user_id}: {random_amount}")
+                    else:
+                        # Ждем 30 минут
+                        minutes = wait_time // 60
+                        seconds = wait_time % 60
+                        await message.reply(
+                            f"⏳ Подождите еще {minutes} минут {seconds} секунд",
+                            parse_mode=ParseMode.MARKDOWN
+                        )
+                        logging.info(f"Пользователю {user_id} отказано в выдаче (ждать {wait_time}с)")
+                
+                # Проверка на обычное "дать" (без "нк" или "денег")
+                elif PATTERN_DAT.search(message.text) and not PATTERN_MONEY.search(message.text):
                     try:
-                        await message.reply("Спасибо тебе! 🎉")
-                    except:
-                        pass
+                        await message.reply(
+                            f"Спасибо тебе, {user_mention}! 🎉",
+                            parse_mode=ParseMode.MARKDOWN,
+                            disable_notification=False
+                        )
+                        logging.info(f"Бот ответил пользователю {user_id} на сообщение: {message.text}")
+                    except Exception as e:
+                        logging.error(f"Ошибка при отправке ответа: {e}")
+                        try:
+                            await message.reply("Спасибо тебе! 🎉")
+                        except:
+                            pass
 
 async def send_promo_series():
     """Отправка серии промо-сообщений во все группы"""
@@ -220,14 +294,14 @@ async def send_promo_series():
                     chat_id=int(group_id),
                     text="создать промо"
                 )
-                await asyncio.sleep(1)  # Задержка 1 секунда
+                await asyncio.sleep(1)
                 
                 # Отправляем второе сообщение
                 await bot.send_message(
                     chat_id=int(group_id),
                     text=str(num1)
                 )
-                await asyncio.sleep(1)  # Задержка 1 секунда
+                await asyncio.sleep(1)
                 
                 # Отправляем третье сообщение
                 await bot.send_message(
@@ -236,14 +310,11 @@ async def send_promo_series():
                 )
                 
                 logging.info(f"Промо-сообщения отправлены в группу {group_id}: {num1}, {num2}")
-                
-                # Небольшая задержка между группами
                 await asyncio.sleep(2)
                 
             except Exception as e:
                 logging.error(f"Ошибка отправки в группу {group_id}: {e}")
         
-        # Обновляем статистику
         db_data["last_send"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         db_data["send_count"] += 1
         save_db()
@@ -256,32 +327,25 @@ async def random_send_scheduler():
     """Фоновая задача для случайной отправки промо"""
     while True:
         try:
-            # Ждем от 30 минут до 2 часов
-            wait_time = random.randint(1800, 7200)  # в секундах
+            wait_time = random.randint(1800, 7200)  # 30-120 минут
             logging.info(f"Следующая отправка через {wait_time//60} минут")
             await asyncio.sleep(wait_time)
-            
-            # Отправляем промо
             await send_promo_series()
-            
         except Exception as e:
             logging.error(f"Ошибка в планировщике: {e}")
-            await asyncio.sleep(60)  # При ошибке ждем минуту
+            await asyncio.sleep(60)
 
 @dp.my_chat_member()
 async def my_chat_member_handler(update: types.ChatMemberUpdated):
     """Обработчик изменений статуса бота в чатах"""
-    # Если бота добавили в группу
     if update.new_chat_member.status in ["administrator", "member"]:
         chat_id = str(update.chat.id)
         if update.chat.type in ["group", "supergroup"]:
             if chat_id not in db_data["groups"]:
-                # Автоматически добавляем группу
                 db_data["groups"].append(chat_id)
                 save_db()
                 logging.info(f"Бот добавлен в группу {chat_id}, группа автоматически добавлена в список")
                 
-                # Уведомляем администратора
                 await bot.send_message(
                     ADMIN_ID,
                     f"✅ Бот добавлен в новую группу!\n"
@@ -291,26 +355,23 @@ async def my_chat_member_handler(update: types.ChatMemberUpdated):
 
 async def main():
     """Главная функция запуска бота"""
-    # Загружаем базу данных
     load_db()
     
     logging.info("Бот запущен!")
     logging.info(f"Групп в списке: {len(db_data['groups'])}")
+    logging.info(f"Пользователей в кэше: {len(db_data['user_requests'])}")
     
-    # Устанавливаем команды
     await bot.set_my_commands([
         types.BotCommand(command="start", description="Запустить бота"),
         types.BotCommand(command="add_group", description="Добавить группу"),
         types.BotCommand(command="remove_group", description="Удалить группу"),
         types.BotCommand(command="list_groups", description="Список групп"),
         types.BotCommand(command="send_promo", description="Отправить промо сейчас"),
-        types.BotCommand(command="stats", description="Статистика")
+        types.BotCommand(command="stats", description="Статистика"),
+        types.BotCommand(command="reset_user", description="Сбросить таймер пользователя")
     ])
     
-    # Запускаем планировщик в фоновом режиме
     asyncio.create_task(random_send_scheduler())
-    
-    # Запускаем polling
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
