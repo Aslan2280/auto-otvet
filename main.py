@@ -285,44 +285,32 @@ async def start_ban_process():
         save_db()
 
 async def process_ban(target_user_id: int, group_id: str):
-    """Обработка бана пользователя"""
+    """Обработка бана пользователя (отправка команд блок/разблок)"""
     try:
-        # Блокируем пользователя
-        await bot.ban_chat_member(
-            chat_id=int(group_id),
-            user_id=target_user_id
-        )
-        
-        # Отправляем сообщение о бане
+        # Отправляем команду "блок [id]"
         await bot.send_message(
             chat_id=int(group_id),
-            text=f"✅ Пользователь {target_user_id} забанен!"
+            text=f"блок {target_user_id}"
         )
         
-        logging.info(f"Пользователь {target_user_id} забанен в группе {group_id}")
+        logging.info(f"Отправлена команда блок {target_user_id} в группе {group_id}")
         
         # Ждем 5 минут
         await asyncio.sleep(300)  # 5 минут
         
-        # Разблокируем пользователя
-        await bot.unban_chat_member(
-            chat_id=int(group_id),
-            user_id=target_user_id
-        )
-        
-        # Отправляем сообщение о разбане
+        # Отправляем команду "разблок [id]"
         await bot.send_message(
             chat_id=int(group_id),
-            text=f"✅ Пользователь {target_user_id} разбанен!"
+            text=f"разблок {target_user_id}"
         )
         
-        logging.info(f"Пользователь {target_user_id} разбанен в группе {group_id}")
+        logging.info(f"Отправлена команда разблок {target_user_id} в группе {group_id}")
         
     except Exception as e:
-        logging.error(f"Ошибка при бане/разбане: {e}")
+        logging.error(f"Ошибка при отправке команд бана: {e}")
         await bot.send_message(
             chat_id=int(group_id),
-            text=f"❌ Ошибка при бане пользователя: {e}"
+            text=f"❌ Ошибка при обработке бана: {e}"
         )
     finally:
         # Сбрасываем флаги
